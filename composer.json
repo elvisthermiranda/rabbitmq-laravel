@@ -20,7 +20,10 @@
         "laravel": {
             "providers": [
                 "ElvistherMiranda\\RabbitmqLaravel\\RabbitServiceProvider"
-            ]
+            ],
+            "aliases": {
+                "Rabbit": "ElvistherMiranda\\RabbitmqLaravel\\Rabbit"
+            }
         }
     },
     "minimum-stability": "stable",

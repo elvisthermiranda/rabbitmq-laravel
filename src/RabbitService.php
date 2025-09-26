@@ -6,12 +6,14 @@ use PhpAmqpLib\Channel\AMQPChannel;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Message\AMQPMessage;
 use Illuminate\Support\Facades\Log;
+use PhpAmqpLib\Wire\AMQPTable;
 
 class RabbitService
 {
     protected ?AMQPStreamConnection $connection = null;
     protected ?AMQPChannel $channel = null;
-    private string $exchange = 'app_exchange';
+
+    protected array $exchangeConfig = [];
 
     public function __construct()
     {
@@ -32,13 +34,20 @@ class RabbitService
 
         $this->channel = $this->connection->channel();
 
-        // Acréscimo
-        $this->channel->exchange_declare(
-            $this->exchange,
-            'direct',
-            false,
-            true,
-            false
+        $this->exchangeConfig = $config['exchange'] ?? [
+            'name' => 'app_exchange',
+            'type' => 'direct',
+            'durable' => true,
+            'auto_delete' => false,
+            'args' => [],
+        ];
+
+        $this->setExchange(
+            $this->exchangeConfig['name'],
+            $this->exchangeConfig['type'],
+            $this->exchangeConfig['durable'],
+            $this->exchangeConfig['auto_delete'],
+            $this->exchangeConfig['args'] ?? []
         );
     }
 
@@ -50,19 +59,21 @@ class RabbitService
         }
     }
 
-    public function publish(string $queue, array $data, ?string $exchange = null): void
+    public function publish(string $queue, array $data, ?string $exchange = null, ?string $routingKey = null): void
     {
-        $this->publishBatch($queue, [$data], $exchange);
+        $this->publishBatch($queue, [$data], $exchange, $routingKey);
     }
 
-    public function publishBatch(string $queue, array $messages, ?string $exchange = null): void
+    public function publishBatch(string $queue, array $messages, ?string $exchange = null, ?string $routingKey = null): void
     {
-        $this->ensureConnected();
+        $this->ensureExchangeDeclared();
 
-        $exchange = $exchange ?? $this->exchange;
+        $exchange = $exchange ?? $this->exchangeConfig['name'];
+        // routing key ou queue name
+        $rtk = $routingKey ?? $queue;
 
         $this->channel->queue_declare($queue, durable: true, exclusive: false, auto_delete: false);
-        $this->channel->queue_bind($queue, $exchange, $queue);
+        $this->channel->queue_bind($queue, $exchange, $rtk);
 
         foreach ($messages as $data) {
             $msg = new AMQPMessage(
@@ -72,7 +83,7 @@ class RabbitService
                     'delivery_mode' => 2,
                 ]
             );
-            $this->channel->basic_publish($msg, $exchange, $queue);
+            $this->channel->basic_publish($msg, $exchange, $rtk);
         }
     }
 
@@ -94,7 +105,7 @@ class RabbitService
             false,
             false,
             [
-                'x-dead-letter-exchange'    => ['S', ''],
+                'x-dead-letter-exchange'    => ['S', $this->exchangeConfig['name']],
                 'x-dead-letter-routing-key' => ['S', $queue],
             ]
         );
@@ -118,14 +129,14 @@ class RabbitService
      * @param callable $callback
      * @param int      $timeoutSegundos Tempo máximo de espera sem mensagens antes de reconectar
      */
-    public function consume(string $queue, callable $callback, int $timeoutSegundos = 30, ?string $exchange = null): void
+    public function consume(string $queue, callable $callback, int $timeoutSegundos = 30, ?string $exchange = null, ?string $routingKey = null): void
     {
-        $this->ensureConnected();
+        $this->ensureExchangeDeclared();
 
-        $exchange = $exchange ?? $this->exchange;
+        $exchange = $exchange ?? $this->exchangeConfig['name'];
 
         $this->channel->queue_declare($queue, durable: true, exclusive: false, auto_delete: false);
-        $this->channel->queue_bind($queue, $exchange, $queue);
+        $this->channel->queue_bind($queue, $exchange, $routingKey ?? $queue);
         $this->channel->basic_qos(null, 1, null);
 
         $this->channel->basic_consume(
@@ -196,4 +207,109 @@ class RabbitService
         $this->connect();
         Log::info('RabbitMQ reconectado com sucesso.');
     }
+
+    // isso é apenas para devs testarem, consume 1 vez e finaliza.
+    public function consumeOne(string $queue, callable $callback): void
+    {
+        $this->ensureExchangeDeclared();
+
+        $this->channel->queue_declare($queue, durable: true, exclusive: false, auto_delete: false);
+
+        if ($msg = $this->channel->basic_get($queue)) {
+            $data = json_decode($msg->getBody(), true);
+            $callback($data, $msg);
+        }
+    }
+
+    public function setExchange(
+        string $name = 'app_exchange',
+        string $type = 'direct',
+        bool $durable = true,
+        bool $autoDelete = false,
+        array $args = []
+    ): self
+    {
+        $this->ensureConnected();
+
+        if ($type === 'x-delayed-message' && ! isset($args['x-delayed-type'])) {
+            $args['x-delayed-type'] = ['S', 'direct'];
+        }
+
+        $this->channel->exchange_declare(
+            $name,
+            $type,
+            false,
+            $durable,
+            $autoDelete,
+            false,
+            $args
+        );
+
+        $this->exchangeConfig = compact('name', 'type', 'durable', 'autoDelete', 'args');
+
+        return $this;
+    }
+
+    protected function ensureExchangeDeclared(): void
+    {
+        $ex = $this->exchangeConfig;
+
+        $this->channel->exchange_declare(
+            $ex['name'],
+            $ex['type'],
+            false,
+            $ex['durable'] ?? true,
+            $ex['auto_delete'] ?? false,
+            false,
+            $ex['args']
+        );
+    }
+
+    /**
+     * Publica mensagem com delay usando o plugin rabbitmq_delayed_message_exchange
+     *
+     * @param string $queue
+     * @param array $data
+     * @param int $delayMs Delay em milissegundos
+     * @param string|null $routingKey
+     */
+    public function publishDelayed(string $queue, array $data, int $delayMs, ?string $routingKey = null): void
+    {
+        $this->ensureConnected();
+
+        // garante que o exchange delayed existe
+        $this->channel->exchange_declare(
+            'delayed_exchange',
+            'x-delayed-message',
+            false,
+            true,
+            false,
+            false,
+            false,
+            [
+                'x-delayed-type' => ['S', 'direct'],
+            ]
+        );
+
+        $rtk = $routingKey ?? $queue;
+
+        $this->channel->queue_declare($queue, durable: true, exclusive: false, auto_delete: false);
+        $this->channel->queue_bind($queue, 'delayed_exchange', $rtk);
+
+        $headers = new AMQPTable([
+            'x-delay' => $delayMs,
+        ]);
+
+        $msg = new AMQPMessage(
+            json_encode($data, JSON_UNESCAPED_UNICODE),
+            [
+                'delivery_mode' => 2,
+                'application_headers' => $headers,
+                'content_type' => 'application/json',
+            ]
+        );
+
+        $this->channel->basic_publish($msg, 'delayed_exchange', $rtk);
+    }
+
 }
