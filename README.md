@@ -20,22 +20,6 @@ Adicione o pacote ao seu projeto Laravel (10, 11 ou 12):
 composer require elvisthermiranda/rabbitmq-laravel
 ```
 
-> 💡 Para testes locais sem publicar no Packagist, use o recurso de **path repository** no seu `composer.json`:
->
-> ```json
-> "repositories": [
->     {
->         "type": "path",
->         "url": "../rabbitmq-laravel"
->     }
-> ]
-> ```
->
-> E depois rode:
-> ```bash
-> composer require elvisthermiranda/rabbitmq-laravel:dev-main
-> ```
-
 ---
 
 ## ⚙️ Configuração
