@@ -82,12 +82,13 @@ php artisan make:job ProcessExampleJob
 namespace App\Jobs;
 
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Support\Facades\Log;
 
 class ProcessExampleJob implements ShouldQueue
 {
     public function handle()
     {
-        \Log::info("RabbitMQ job executado com sucesso!");
+        Log::info("RabbitMQ job executado com sucesso!");
     }
 }
 ```
