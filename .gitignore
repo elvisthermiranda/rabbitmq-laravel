@@ -1,0 +1,5 @@
+*.log
+.env
+composer.lock
+/.vscode
+/vendor
